@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="space">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>声文 SoundScribe · 本地语音转文字</title>
+<!-- 内联 SVG 图标：既是品牌标识，也顺手消掉浏览器自动请求 /favicon.ico 的 404 -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%232DD4BF'/><stop offset='1' stop-color='%238B7CF6'/></linearGradient></defs><rect width='32' height='32' rx='9' fill='url(%23g)'/><circle cx='16' cy='16' r='5.5' fill='%2306080F'/></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div class="nebula"></div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark"></div>
+      <div>
+        <h1>声文</h1>
+        <p class="sub">SOUNDSCRIBE</p>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button data-view="workbench" class="on"><span class="dot"></span><span>工作台</span><span class="badge" id="wfBadge" style="display:none">0</span></button>
+      <button data-view="library"><span class="dot"></span><span>文稿库</span><span class="badge" id="libCount">0</span></button>
+      <button data-view="models"><span class="dot"></span><span>模型中心</span><span class="badge" id="mdlBadge" style="display:none">0</span></button>
+      <button data-view="settings"><span class="dot"></span><span>词库</span></button>
+      <button data-view="diag"><span class="dot"></span><span>诊断报告</span></button>
+    </nav>
+
+    <div class="sidefoot">
+      <!-- ═══ 系统状态（常驻可见，2026-09-30 从设置页/工作台页头集中到这里）═══
+           理由：磁盘、引擎、硬件档位是"随时该看到"的状态，
+           藏在某个页面里就得先切过去才知道现在什么情况。 -->
+      <div class="sysblock">
+        <p class="syshead">系统状态</p>
+        <div class="syspills">
+          <span class="pill" id="envPill">正在自检…</span>
+          <span class="pill" id="enginePill">引擎检测中</span>
+          <!-- ★ 推理后端（CPU / GPU）。以前界面上完全没有这一项，
+               用户只能靠猜"到底跑在什么设备上"。是否真的用上 GPU
+               由后端探测决定（provider 会静默回落，不能只看有没有显卡）。 -->
+          <span class="pill" id="devicePill">设备检测中</span>
+        </div>
+
+        <div class="sysdisk">
+          <p class="sysdisk-top"><span id="storageHint">磁盘读取中…</span></p>
+          <div class="stackbar" id="storageStack"></div>
+          <ul class="sysleg" id="storageLegend"></ul>
+        </div>
+
+        <button class="btn sm primary wide" id="btnCleanSpace">释放空间…</button>
+        <p class="note tiny" id="cacheNote"></p>
+      </div>
+
+      <div class="themeswitch" id="themeswitch">
+        <button data-set="space" class="on">深空</button>
+        <button data-set="day">浅色</button>
+        <button data-set="auto">跟随</button>
+      </div>
+      <p class="ver" id="ver">v0.9.1</p>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ═══ 工作台 ═══ -->
+    <section class="view on" id="view-workbench">
+      <div class="pagehead">
+        <div>
+          <h2>工作台</h2>
+          <p class="desc">拖进文件 → 确认列表 → 点「开始转写」。拖入不会自动跑</p>
+        </div>
+      </div>
+
+      <div id="wbBanner"></div>
+
+      <div class="card">
+        <div class="drop" id="dropzone">
+          <svg width="26" height="26" viewBox="0 0 20 20"><path d="M10 14V3M10 3L6 7M10 3L14 7M3 13v3.5A1.5 1.5 0 0 0 4.5 18h11a1.5 1.5 0 0 0 1.5-1.5V13" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--accent)"/></svg>
+          <p class="t1">把视频或音频拖到这里（可一次拖多个）</p>
+          <p class="t2">拖到窗口任意位置都可以 · 支持 mp4 / mov / mkv / mp3 / m4a / wav 等</p>
+          <p class="t3">拖入后先进入待开始列表，你确认无误再点开始</p>
+        </div>
+        <input type="file" id="filepick" style="display:none" multiple accept="video/*,audio/*">
+      </div>
+
+      <!-- ★ 导出位置：放在首页，拖完就能定好再开始 -->
+      <div class="card compact" id="exportCard">
+        <div class="dirbar">
+          <span class="dirlabel">导出到</span>
+          <input type="text" id="exportDir" spellcheck="false"
+                 placeholder="留空则用默认目录（soundscribe\data\exports）">
+          <button class="btn sm" id="btnPickDir">选择文件夹…</button>
+          <button class="btn sm ghost" id="btnResetDir">恢复默认</button>
+        </div>
+        <div class="quickdirs" id="quickDirs"></div>
+        <p class="note" id="exportNote">转写完成后，勾选的格式会写到这个文件夹里</p>
+      </div>
+
+      <!-- ★ 待开始队列：这一版的核心交互变化 -->
+      <div class="card" id="stageCard" style="display:none">
+        <h3>
+          待开始 <span class="hint" id="stageHint">点「开始转写」后才会运行</span>
+        </h3>
+        <div class="stageList" id="stageList"></div>
+        <div class="stageActions">
+          <button class="btn primary" id="btnStartAll">开始转写</button>
+          <button class="btn ghost" id="btnStageClear">全部移除</button>
+          <span class="stageNote" id="stageNote"></span>
+        </div>
+      </div>
+
+
+      <!-- 默认转写选项（原来在设置页，2026-09-30 挪到工作台：这里才决定"怎么转"） -->
+      <div class="card">
+          <h3>转写选项</h3>
+          <!-- ★ 引擎选择**不在这里**了（2026-09-30 定案）。
+               理由：引擎是"每个文件各自的事"——一批里可能中英素材混着，
+               放在全局设置里会产生"设了却不生效/两处不一致"的困扰。
+               现在统一在「待开始」列表里，一个文件选一次，默认自动判定。 -->
+          <div class="field">
+            <label>引擎选择</label>
+            <p class="note">引擎统一在「<b>待开始</b>」列表里逐文件选择（默认「自动判定」，
+              中文自动走 SenseVoice、纯英文自动走 Parakeet）。这里不再重复设置，避免两处打架。
+            </p>
+          </div>
+          <div class="field">
+            <label>时间轴</label>
+            <div class="seg" id="optTimeline">
+              <button data-v="none">不要</button>
+              <button data-v="segment" class="on">段级</button>
+              <button data-v="word" disabled>词级</button>
+            </div>
+            <p class="note" id="timelineNote">选「不要」将无法导出 SRT / VTT，播放器也不能逐句高亮</p>
+            <p class="note">「词级」暂未开放：识别结果里已经带了字级时间戳，但导出环节还没接上。</p>
+          </div>
+          <div class="field">
+            <label>人声检测（VAD）</label>
+            <div class="seg" id="optVad">
+              <button data-v="1" class="on">开启</button>
+              <button data-v="0">关闭</button>
+            </div>
+            <p class="note">跳过静音段可提速数倍，同时抑制 Whisper 在静音处的幻觉。</p>
+            <!-- ★ 生效范围由 /api/capabilities 生成，不再手写。
+                 手写过一句"仅对 Whisper 生效"，实际行为一变它就过期，而且没人知道。 -->
+            <p class="note" id="vadScopeNote">生效范围加载中…</p>
+          </div>
+          <div class="field">
+            <label>响度归一化</label>
+            <div class="seg" id="optNorm">
+              <button data-v="0" class="on">关闭</button>
+              <button data-v="1">开启</button>
+            </div>
+            <p class="note">录音忽大忽小时开启，可改善识别稳定性（会略微增加预处理时间）。对全部引擎生效。</p>
+          </div>
+        </div>
+      <div class="card" id="jobCard" style="display:none">
+        <div class="filerow">
+          <span class="name" id="jobName">—</span>
+          <span class="meta" id="jobMeta">—</span>
+        </div>
+        <div class="stages" id="jobStages"></div>
+        <div class="bar"><i id="jobBar"></i></div>
+        <!-- ★ 实时识别文字：一行不断刷新的"刚识别出什么"。
+             作用不只是好看 —— CPU 识别再慢也比人眼读一行字快，
+             把结果滚动出来能明显抵消"进度条不动"的焦虑感。 -->
+        <div class="joblive" id="jobLiveWrap">
+          <span class="livedot"></span>
+          <span class="livetext" id="jobLive">等待识别…</span>
+        </div>
+        <div class="stats">
+          <span id="jobStats">—</span>
+          <span class="ctl">
+            <button class="btn sm" id="btnPause" disabled>暂停</button>
+            <button class="btn sm" id="btnCancel" disabled>取消</button>
+          </span>
+        </div>
+        <!-- ★ 设置回执：这一趟到底哪些设置真的生效了。
+             ★★ 为什么要有它：用户问过"转写设置里这么多东西，是不是真的生效的？"——
+                以前只能靠人去读代码回答，那是不可持续的。现在由任务把每次跑过的
+                真实参数带回来，把这个问题变成产品自己能回答的事。 -->
+        <div class="receipt" id="jobReceipt" style="display:none"></div>
+      </div>
+
+      <div class="card" id="routeCard" style="display:none">
+        <h3>语言路由判定 <span class="hint" id="routeHint"></span></h3>
+        <div class="grid c4" id="routeMetrics"></div>
+        <p class="desc" style="font-size:12px;color:var(--text-2);margin:10px 0 0" id="routeReason"></p>
+      </div>
+
+      <div class="card" id="transcriptCard" style="display:none">
+        <h3>
+          实时转写
+          <span class="hint"><span id="txCount">0</span> 段 · <span id="txChars">0</span> 字<span
+            id="txReviewWrap" style="display:none"> · <span id="txReview">0</span> 段待复核</span></span>
+        </h3>
+        <div class="transcript" id="transcript"></div>
+      </div>
+
+      <div class="card">
+        <h3>
+          任务列表 <span class="hint" id="recentJobsHint">点击查看结果</span>
+        </h3>
+        <div class="joblist" id="recentJobs"><p class="empty">还没有任务</p></div>
+        <div class="listbar" id="jobListBar">
+          <label class="pickall" id="wrapPickAllJobs">
+            <input type="checkbox" id="pickAllJobs"><span>全选</span>
+          </label>
+          <span class="picked" id="jobPicked">未选中</span>
+          <span class="spacer"></span>
+          <button class="btn sm danger" id="btnDeletePicked" disabled>删除选中</button>
+          <button class="btn sm ghost" id="btnClearFinished">清理已结束</button>
+          <button class="btn sm ghost danger" id="btnClearAll">清空全部</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ 文稿库 ═══ -->
+    <section class="view" id="view-library">
+      <div class="pagehead">
+        <div>
+          <h2>文稿库</h2>
+          <p class="desc">已完成的任务与导出文件</p>
+        </div>
+        <button class="btn sm" id="btnExportOpen">打开导出目录</button>
+      </div>
+
+      <!-- 导出设置（原来在设置页，2026-09-30 挪到文稿库：这里才导出成果） -->
+      <div class="card">
+          <h3>导出设置</h3>
+          <div class="field">
+            <label>导出目录结构</label>
+            <div class="seg" id="optLayout">
+              <button data-v="by_date" class="on">按日期分文件夹</button>
+              <button data-v="flat">平铺</button>
+            </div>
+            <p class="note" id="exportPathNote">当前导出根目录：—</p>
+          </div>
+          <div class="field">
+            <label>导出格式</label>
+            <div class="checks" id="optFormats">
+              <button data-v="txt" class="on">TXT</button>
+              <button data-v="srt" class="on">SRT</button>
+              <button data-v="vtt" class="on">VTT</button>
+              <button data-v="md" class="on">Markdown</button>
+              <button data-v="json">JSON</button>
+            </div>
+            <p class="note" id="formatNote">已选 4 种格式，转写完成后自动导出</p>
+          </div>
+          <div class="field">
+            <label>文件名模板</label>
+            <input type="text" id="optTemplate" value="{stem}_{engine}_{date}">
+            <p class="note">可用变量：{stem} 源文件名 · {engine} 引擎 · {date} 日期</p>
+          </div>
+        </div>
+      <div class="card">
+        <div class="joblist" id="libList"><p class="empty">还没有文稿</p></div>
+        <div class="listbar" id="libListBar">
+          <label class="pickall">
+            <input type="checkbox" id="pickAllLib"><span>全选</span>
+          </label>
+          <span class="picked" id="libPicked">未选中</span>
+          <span class="spacer"></span>
+          <button class="btn sm danger" id="btnDeletePickedLib" disabled>删除选中</button>
+          <button class="btn sm ghost danger" id="btnClearLib">清空记录</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ 模型中心 ═══ -->
+    <section class="view" id="view-models">
+      <div class="pagehead">
+        <div>
+          <h2>模型中心</h2>
+          <p class="desc">按需下载、随时删除。跑不起来的量化档会被禁用并说明原因</p>
+        </div>
+        <button class="btn sm" id="btnRecheck">重新检测并推荐</button>
+      </div>
+      <div class="card">
+        <h3>本机状态 <span class="hint" id="tierHint"></span></h3>
+        <div class="grid c4" id="hwMetrics"></div>
+      </div>
+      <div class="card">
+        <h3>
+          模型清单
+          <span class="hint" id="modelSummary"></span>
+        </h3>
+        <!-- ★ 结论先行：先说"你这台机器该用哪个"，再列全部模型 -->
+        <div class="recobar" id="recoBar"></div>
+        <div id="modelList"></div>
+      </div>
+    </section>
+
+    <!-- ═══ 导出与词库 ═══ -->
+    <section class="view" id="view-settings">
+      <div class="pagehead">
+        <div>
+          <h2>词库</h2>
+          <p class="desc">领域热词库与纠错规则表 —— 决定"转出来的词对不对"，可自由导入导出</p>
+        </div>
+      </div>
+
+      <!-- ★ 生效范围说明。
+           ★★ 2026-09-30 起这里的内容**全部由能力矩阵（/api/capabilities）生成**，
+             一句都不再手写。原因：手写的必然与实际行为漂移，而且漂了没人知道 ——
+             实测漂过：这里曾写死"领域热词 仅 Whisper 引擎生效"，
+             而 Parakeet 其实已经接上了原生热词；也曾写死"内置规则来自 Whisper"，
+             而这句话的事实来源（规则的 source_engine 字段）当时根本没记录。
+           现在改为读矩阵：接线改一次，说明自动跟着变。 -->
+      <div class="card">
+        <h3>这些设置分别在什么时候起作用</h3>
+        <div id="scopeBody"><p class="empty" style="padding:12px 0">正在读取生效范围…</p></div>
+      </div>
+
+      <!-- ─── 纠错规则表 ─── -->
+      <div class="card">
+        <h3>
+          纠错规则表
+          <span class="hint" id="corrCount"></span>
+        </h3>
+        <p class="note" style="margin-bottom:12px">
+          命中后自动替换，不需要重新转写。内置规则来自真实转写错误统计（<strong>不喜欢也可以删，随时能恢复</strong>），你自己导入的可整批撤销。
+        </p>
+        <div class="toolbar">
+          <button class="btn sm" id="btnCorrImport">导入规则文件</button>
+          <button class="btn sm" id="btnCorrTpl">下载模板</button>
+          <button class="btn sm ghost" id="btnCorrRestore">恢复内置规则</button>
+          <button class="btn sm ghost" id="btnCorrClear">清空我的导入</button>
+          <span class="toolbar-note" id="corrImportNote"></span>
+        </div>
+        <input type="file" id="corrFile" style="display:none"
+               accept=".json,.csv,.tsv,.txt,.md">
+        <details class="addbox">
+          <summary>手动添加一条规则</summary>
+          <div class="addrow">
+            <input type="text" id="corrPat" placeholder="错误写法，如：手势">
+            <span class="arrow">→</span>
+            <input type="text" id="corrRep" placeholder="正确写法，如：首饰（留空表示删除该词）">
+            <button class="btn sm primary" id="btnCorrAddDo">添加</button>
+          </div>
+        </details>
+        <div class="filterbar">
+          <input type="text" id="corrFilter" placeholder="过滤规则…（输入关键词快速定位）" spellcheck="false">
+          <span class="hint" id="corrFilterHint"></span>
+        </div>
+        <div id="corrList" class="scrollbox"></div>
+      </div>
+
+      <!-- ─── 热词库 ─── -->
+      <div class="card">
+        <h3>
+          领域热词库
+          <span class="hint" id="hotCount"></span>
+        </h3>
+        <p class="note" style="margin-bottom:12px">
+          按语言分组注入到识别引擎。中文组与英文组混在一起会互相稀释效果。支持 .txt / .csv / .json。
+        </p>
+        <div class="toolbar">
+          <button class="btn sm" id="btnHotImport">导入热词文件</button>
+          <button class="btn sm" id="btnHotTpl">下载模板</button>
+          <button class="btn sm ghost" id="btnHotRestore">恢复内置热词</button>
+          <button class="btn sm ghost" id="btnHotClear">清空我的导入</button>
+          <span class="toolbar-note" id="hotImportNote"></span>
+        </div>
+        <input type="file" id="hotFile" style="display:none"
+               accept=".json,.csv,.tsv,.txt,.md">
+        <details class="addbox">
+          <summary>手动添加热词（每行一个，或用逗号分隔）</summary>
+          <div class="addcol">
+            <textarea id="hotNew" rows="3" placeholder="量子计算&#10;TikTok Shop&#10;checkout flow"></textarea>
+            <div class="addrow">
+              <select id="hotGroup" class="mini">
+                <option value="">自动分组（按中英文）</option>
+                <option value="zh.custom">中文 · 自定义</option>
+                <option value="en.custom">英文 · 自定义</option>
+                <option value="zh.people">中文 · 人名</option>
+                <option value="en.brands">英文 · 品牌</option>
+              </select>
+              <button class="btn sm primary" id="btnHotAddDo">添加</button>
+            </div>
+          </div>
+        </details>
+        <div class="filterbar">
+          <input type="text" id="hotFilter" placeholder="过滤热词…（输入关键词快速定位）" spellcheck="false">
+          <span class="hint" id="hotFilterHint"></span>
+        </div>
+        <div id="hotBatches"></div>
+        <div id="hotList" class="scrollbox"></div>
+      </div>
+
+      <!-- ─── 磁盘占用 ─── -->
+      </section>
+
+    <!-- ═══ 诊断报告 ═══ -->
+    <section class="view" id="view-diag">
+      <div class="pagehead">
+        <div>
+          <h2>诊断报告</h2>
+          <p class="desc">逐项检查运行环境 —— 缺什么、坏什么一目了然，能自动修的可以直接修</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn sm" id="btnHealthRefresh">重新检查</button>
+          <button class="btn sm primary" id="btnHealthFix">诊断修复</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>体检结论 <span class="hint" id="healthAt"></span></h3>
+        <div class="verdict" id="healthVerdict">正在检查…</div>
+        <div class="grid c4" id="healthStats" style="margin-top:14px"></div>
+        <p class="note" id="healthFixNote" style="margin-top:12px"></p>
+      </div>
+
+      <div class="card" id="fixCard" style="display:none">
+        <h3>修复进度 <span class="hint" id="fixHint"></span></h3>
+        <div class="bar"><i id="fixBar"></i></div>
+        <div id="fixSteps"></div>
+        <div class="toolbar" style="margin-top:12px">
+          <button class="btn sm ghost" id="btnFixStop">停止修复</button>
+          <span class="toolbar-note" id="fixNote"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>检查明细 <span class="hint">单项右侧可以只修这一项</span></h3>
+        <div id="healthList"></div>
+      </div>
+
+      <div class="card">
+        <h3>原始报告 <span class="hint">出问题时复制给开发者</span></h3>
+        <div class="toolbar">
+          <button class="btn sm" id="btnCopyDiag">复制报告</button>
+        </div>
+        <div class="logbox" id="diagBox">正在生成…</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="dropoverlay" id="dropoverlay">
+  <div class="inner">
+    <p>松手加入待开始列表</p>
+    <p class="sub">加入后可以逐个确认，再点「开始转写」</p>
+  </div>
+</div>
+
+<!-- ═══ 目录选择弹层（应用内浏览，不依赖系统对话框）═══ -->
+<div class="modal" id="dirModal">
+  <div class="modal-box" role="dialog" aria-label="选择导出文件夹">
+    <div class="modal-head">
+      <h3>选择导出文件夹</h3>
+      <button class="modal-x" id="dirClose" title="关闭（Esc）">×</button>
+    </div>
+    <div class="modal-nav">
+      <button class="btn sm ghost" id="dirUp">↑ 上一级</button>
+      <input type="text" id="dirPathInput" spellcheck="false"
+             placeholder="也可以直接粘贴路径，回车跳转">
+      <button class="btn sm" id="dirGo">转到</button>
+    </div>
+    <div class="modal-body">
+      <div class="dir-side" id="dirRoots"></div>
+      <div class="dir-main" id="dirList"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-status" id="dirStatus"></span>
+      <button class="btn sm ghost" id="dirCancel">取消</button>
+      <button class="btn sm primary" id="dirUse">使用这个文件夹</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 释放空间弹层（勾选要清理的内容 + 二次确认）═══ -->
+<div class="modal" id="cleanModal">
+  <div class="modal-box" role="dialog" aria-label="释放磁盘空间">
+    <div class="modal-head">
+      <h3>释放磁盘空间</h3>
+      <button class="modal-x" id="cleanClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body" style="flex-direction:column">
+      <div style="padding:14px 18px 0">
+        <p class="note" id="cleanLead"></p>
+      </div>
+      <div id="cleanList" style="padding:6px 18px 14px;overflow-y:auto"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-status" id="cleanStatus"></span>
+      <button class="btn sm ghost" id="cleanCancel">取消</button>
+      <button class="btn sm" id="cleanGo" disabled>释放选中项</button>
+    </div>
+  </div>
+</div>
+
+<div class="toastwrap" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

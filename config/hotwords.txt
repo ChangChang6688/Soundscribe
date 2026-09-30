@@ -1,0 +1,114 @@
+# 声文 · 领域热词库
+#
+# 作用：在 ASR 解码前注入这些词，显著提升专有名词、人名、术语的识别率。
+#   - Whisper  : 通过 initial_prompt 注入（建议整句形式，效果好于词表）
+#   - SenseVoice: 通过 hotword 列表注入
+#
+# ★ 必须分语言组注入（实测结论）：中文组与英文组一起灌会互相稀释效果。
+#   中文素材只注入 zh 组，英文素材只注入 en 组。
+#
+# 来源：从 2026-09-18 两份真实素材转写中实际出现的错识别与领域术语整理。
+#   素材 A：中文珠宝授课录音 122 分钟
+#   素材 B：英文 SEO/GEO 讲解视频 8.2 分钟
+#
+# 维护建议：
+#   1. 每转写一批素材，把错识别的人名/术语补进来
+#   2. 单组控制在 50–200 词；过长的热词表会稀释效果
+
+# ═══════════════ 中文组（zh） ═══════════════
+
+[zh.people]
+# 人名 —— 最典型也最值得优先维护的一类
+张懿霖
+舒文帆
+暴东宁
+周明旭
+姚文科
+张家利
+谈少华
+文文老师
+
+[zh.brands]
+Happy Reality
+Jade桃
+totwoo
+心有灵犀
+
+[zh.industry_terms]
+# 珠宝与首饰行业（实测：Whisper 把「首饰」错成「手势」13 次）
+首饰
+925银
+玉石
+失蜡铸造
+空心壳体
+分模线
+内腔公差
+可铸造蜡模
+光敏树脂
+珠宝设计
+品牌出海
+退货率
+客单价
+畅销款
+非遗
+工美
+数字与禅道
+
+[zh.hardware_terms]
+# 可穿戴硬件（本项目团队日常用语）
+PCBA
+贴片
+物料
+组装
+固件
+触觉
+马达
+麦克风
+触摸
+重量毯
+ASMR
+情绪经济
+
+[zh.orgs_and_edu]
+谢菲尔德
+伯明翰
+香港城市大学
+十四五
+国家级教材首饰设计与制作
+
+# ═══════════════ 英文组（en） ═══════════════
+
+[en.tech_marketing]
+# 实测：SenseVoice 在英文术语上大量出错（GEO→ge/gee/geeo，ChatGPT→chatgt/chaty pt，
+# Perplexity→tobtplexity，generative→geneative，optimization 漏词，plenty→penti）
+GEO
+SEO
+generative engine optimization
+ChatGPT
+Perplexity
+Google
+Bing
+AI overviews
+large language model
+webpage
+backlink
+
+[en.brands]
+OpenAI
+Anthropic
+Claude
+Gemini
+Copilot
+
+# ─── Whisper 用：整句形式的上下文提示 ───
+# Whisper 对整句的响应好于纯词表，按素材语言二选一传入。
+
+# 【中文素材用】
+# 以下为普通话授课录音，内容涉及珠宝首饰设计、品牌出海、可穿戴硬件。
+# 涉及人名：张懿霖、舒文帆、周明旭；品牌：Happy Reality、Jade桃、totwoo；
+# 专业术语：首饰、925银、失蜡铸造、内腔公差、PCBA、触觉、ASMR、情绪经济、数字与禅道。
+
+# 【英文素材用】
+# This is an English talk about SEO and GEO (generative engine optimization),
+# covering ChatGPT, Perplexity, Google AI overviews, Bing, and AI search.
+
